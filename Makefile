@@ -9,4 +9,3 @@ clean:
 	@for dir in part1 part2; do \
 		$(MAKE) -C $$dir clean; \
 	done
-
