@@ -198,6 +198,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 			else if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT && vcpu->kvm_run->io.port == 0xE8)
 			{ // HC_print32bit
 				num_out_exits++;
+				/* Using the fact that there's a one-one mapping between gva and ppa in all modes */
 				uint32_t *p = (uint32_t *)((char *)vcpu->kvm_run + vcpu->kvm_run->io.data_offset);
 				printf("%u\n", *p);
 				continue;
@@ -205,6 +206,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 			else if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_IN && vcpu->kvm_run->io.port == 0xE7)
 			{ // HC_numExits
 				num_in_exits++;
+				/* Using the fact that there's a one-one mapping between gva and ppa in all modes */
 				uint32_t *p = (uint32_t *)((char *)vcpu->kvm_run + vcpu->kvm_run->io.data_offset);
 				*p = num_exits;
 				continue;
@@ -214,6 +216,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				num_out_exits++;
 				char *p = (char *)vcpu->kvm_run;
 				char *str_ppa = *(char **)(p + vcpu->kvm_run->io.data_offset);
+				/* Using the fact that there's a one-one mapping between gva and ppa in all modes */
 				char *str_hva = (char *)vm->mem + (uint64_t)str_ppa;
 				printf("%s", str_hva);
 				continue;
@@ -240,7 +243,9 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 					perror("KVM_TRANSLATE");
 					exit(1);
 				}
-				if (!tr.valid || tr.physical_address >= MEM_SIZE)
+				if (!tr.valid /* check to see if gva to ppa mapping exist */
+						|| tr.physical_address >= MEM_SIZE /* check to see if ppa to hva mapping exist */
+					)
 				{
 					printf("Invalid GVA\n");
 					arr[1] = 0;

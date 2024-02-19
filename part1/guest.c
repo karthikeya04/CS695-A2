@@ -21,6 +21,7 @@ static uint32_t inl(uint16_t port)
 static char *data_buffer[0x100000];
 static char *buffer_ptr = (char *)data_buffer;
 
+// a simple custom malloc function for the guest
 void *malloc(size_t size)
 {
 	void *ret = buffer_ptr;
@@ -45,11 +46,20 @@ uint32_t HC_numExits()
 
 void HC_printStr(char *str)
 {
+	/*
+		Pass the guest's virtual address to the hypervisor.
+	*/
 	outl(0xE6, (uint32_t)(long)str);
 }
 
 char *HC_numExitsByType()
 {
+	/*
+		reserve some memory in guest's virtual address space (using custom malloc)
+		and pass the guest's virtual address to the hypervisor.
+		After the hypervisor writes the data, the guest can read the data from the
+		memory location and return the pointer to the string.
+	*/
 	char *str = (char *)malloc(100);
 	for (int i = 0; i < 100; i++)
 		str[i] = '\0';
@@ -59,6 +69,10 @@ char *HC_numExitsByType()
 
 uint32_t HC_gvaToHva(uint32_t gva)
 {
+	/*
+		arr[0] -> gva (filled by the guest before the IO operation)
+		arr[1] -> hva (filled by the hypervisor)
+	*/
 	uint32_t *arr = (uint32_t *)malloc(2 * sizeof(uint32_t));
 	arr[0] = gva;
 	outl(0xE4, (uint32_t)(long)arr);
