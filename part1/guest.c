@@ -1,8 +1,31 @@
 #include <stddef.h>
 #include <stdint.h>
 
-static void outb(uint16_t port, uint8_t value) {
-	asm("outb %0,%1" : /* empty */ : "a" (value), "Nd" (port) : "memory");
+static void outb(uint16_t port, uint8_t value)
+{
+	asm("outb %0,%1" : /* empty */ : "a"(value), "Nd"(port) : "memory");
+}
+
+static void outl(uint16_t port, uint32_t value)
+{
+	asm("outl %0,%1" : /* empty */ : "a"(value), "Nd"(port) : "memory");
+}
+
+static uint32_t inl(uint16_t port)
+{
+	uint32_t ret;
+	asm("inl %1,%0" : "=a"(ret) : "Nd"(port) : "memory");
+	return ret;
+}
+
+static char *data_buffer[0x100000];
+static char *buffer_ptr = (char *)data_buffer;
+
+void *malloc(size_t size)
+{
+	void *ret = buffer_ptr;
+	buffer_ptr += size;
+	return ret;
 }
 
 void HC_print8bit(uint8_t val)
@@ -12,44 +35,45 @@ void HC_print8bit(uint8_t val)
 
 void HC_print32bit(uint32_t val)
 {
-	// Fill in here
-	val++;		// Remove this
+	outl(0xE8, val);
 }
 
 uint32_t HC_numExits()
 {
-	// Fill in here
-	return 0;	// Remove this
+	return inl(0xE7);
 }
 
 void HC_printStr(char *str)
 {
-	// Fill in here
-	str++;		// Remove this
+	outl(0xE6, (uint32_t)(long)str);
 }
 
 char *HC_numExitsByType()
 {
-	// Fill in here
-	return NULL;	// Remove this
+	char *str = (char *)malloc(100);
+	for (int i = 0; i < 100; i++)
+		str[i] = '\0';
+	outl(0xE5, (uint32_t)(long)str);
+	return str;
 }
 
 uint32_t HC_gvaToHva(uint32_t gva)
 {
-	// Fill in here
-	gva++;		// Remove this
-	return 0;	// Remove this
+	uint32_t *arr = (uint32_t *)malloc(2 * sizeof(uint32_t));
+	arr[0] = gva;
+	outl(0xE4, (uint32_t)(long)arr);
+	return arr[1];
 }
 
 void
-__attribute__((noreturn))
-__attribute__((section(".start")))
-_start(void) {
+	__attribute__((noreturn))
+	__attribute__((section(".start")))
+	_start(void)
+{
 	const char *p;
 
 	for (p = "Hello 695!\n"; *p; ++p)
 		HC_print8bit(*p);
-
 
 	/*----------Don't modify this section. We will use grading script---------*/
 	/*---Your submission will fail the testcases if you modify this section---*/
@@ -79,8 +103,8 @@ _start(void) {
 	HC_printStr(secondstr);
 	/*------------------------------------------------------------------------*/
 
-	*(long *) 0x400 = 42;
+	*(long *)0x400 = 42;
 
 	for (;;)
-		asm("hlt" : /* empty */ : "a" (42) : "memory");
+		asm("hlt" : /* empty */ : "a"(42) : "memory");
 }
