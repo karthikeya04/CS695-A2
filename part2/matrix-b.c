@@ -21,7 +21,7 @@
 #define CURRENT_TIME ((double)clock() / CLOCKS_PER_SEC)
 #define QUANTUM 1
 #define CLOCKID CLOCK_REALTIME
-#define SIG SIGALRM
+#define SIG SIGRTMIN
 
 struct vm
 {
@@ -335,6 +335,7 @@ void kvm_run_vm(struct vm *vm1, struct vm *vm2)
             vm = vm2;
             current_vm = 1;
         }
+        printf("VMFD: %d started running\n", vm->vm_fd);
 
         /* start the timer */
         if (timer_settime(timerid, 0, &its, NULL) == -1)
@@ -342,8 +343,6 @@ void kvm_run_vm(struct vm *vm1, struct vm *vm2)
             perror("timer_settime");
             exit(1);
         }
-        printf("VMFD: %d started running\n", vm->vm_fd);
-
         ret = ioctl(vm->vcpus->vcpu_fd, KVM_RUN, 0);
         printf("Time: %f\n", CURRENT_TIME);
         printf("VMFD: %d stopped running - exit reason: %d\n", vm->vm_fd, vm->vcpus->kvm_run->exit_reason);

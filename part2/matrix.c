@@ -8,13 +8,22 @@
 #include <sys/ioctl.h>
 #define _GNU_SOURCE
 #include <unistd.h>
+#include <signal.h>
+#include <time.h>
+#include <stdint.h>
+#include <string.h>
 
 #define KVM_DEVICE "/dev/kvm"
 #define RAM_SIZE 512000000
 #define CODE_START 0x1000
-#define BINARY_FILE1 "guest1.bin"
-#define BINARY_FILE2 "guest2.bin"
+#define BINARY_FILE1 "guest1-b.bin"
+#define BINARY_FILE2 "guest2-b.bin"
 #define CURRENT_TIME ((double)clock() / CLOCKS_PER_SEC)
+#define QUANTUM 1
+#define CLOCKID CLOCK_REALTIME
+#define SIG SIGRTMIN
+#define FRAC_A 7
+#define FRAC_B 3
 
 struct vm
 {
@@ -261,21 +270,131 @@ exit_kvm:
 
 void kvm_run_vm(struct vm *vm1, struct vm *vm2)
 {
-    if (pthread_create(&(vm1->vcpus->vcpu_thread), (const pthread_attr_t *)NULL, vm1->vcpus->vcpu_thread_func, vm1) != 0)
+    int ret = 0;
+    struct vm *vm;
+    int remaining_1 = FRAC_A, remaining_2 = 0;
+    timer_t timerid;
+    sigset_t mask;
+    struct sigevent sev;
+    struct itimerspec its;
+
+    kvm_reset_vcpu(vm1->vcpus);
+    kvm_reset_vcpu(vm2->vcpus);
+
+    /* block the timer signal in the hypervisor mode */
+    sigemptyset(&mask);
+    sigaddset(&mask, SIG);
+    if (sigprocmask(SIG_SETMASK, &mask, NULL) == -1)
     {
-        perror("can not create kvm thread");
+        perror("sigprocmask");
         exit(1);
     }
-    if (pthread_create(&(vm2->vcpus->vcpu_thread), (const pthread_attr_t *)NULL, vm2->vcpus->vcpu_thread_func, vm2) != 0)
+
+    /* set signal mask of VMs via KVM_SET_SIGNAL_MASK */
+    sigset_t vm_mask = mask;
+    sigdelset(&vm_mask, SIG);
+    struct kvm_signal_mask *sigmask;
+    sigmask = malloc(sizeof(*sigmask) + sizeof(vm_mask));
+    sigmask->len = 8;
+    memcpy(sigmask->sigset, &vm_mask, sizeof(vm_mask));
+    if (ioctl(vm1->vcpus->vcpu_fd, KVM_SET_SIGNAL_MASK, sigmask) < 0)
     {
-        perror("can not create kvm thread");
+        perror("KVM_SET_SIGNAL_MASK");
         exit(1);
     }
-    pthread_join(vm1->vcpus->vcpu_thread, NULL);
-    pthread_join(vm2->vcpus->vcpu_thread, NULL);
+    if (ioctl(vm2->vcpus->vcpu_fd, KVM_SET_SIGNAL_MASK, sigmask) < 0)
+    {
+        perror("KVM_SET_SIGNAL_MASK");
+        exit(1);
+    }
+    free(sigmask);
 
-    // Remove everything in the function above this line and replace it with your code here
+    /* Create the timer */
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIG;
+    sev.sigev_value.sival_ptr = &timerid;
+    if (timer_create(CLOCKID, &sev, &timerid) == -1)
+    {
+        perror("timer_create");
+        exit(1);
+    }
 
+    /* init timerspecs */
+    its.it_value.tv_sec = QUANTUM;
+    its.it_value.tv_nsec = 0;
+    its.it_interval.tv_sec = 0;
+    its.it_interval.tv_nsec = 0;
+
+    while (1)
+    {
+        if (remaining_1)
+        {
+            vm = vm1;
+            remaining_1--;
+            if (remaining_1 == 0)
+                remaining_2 = FRAC_B;
+        }
+        else
+        {
+            vm = vm2;
+            remaining_2--;
+            if (remaining_2 == 0)
+                remaining_1 = FRAC_A;
+        }
+
+        printf("VMFD: %d started running\n", vm->vm_fd);
+
+        /* start the timer */
+        if (timer_settime(timerid, 0, &its, NULL) == -1)
+        {
+            perror("timer_settime");
+            exit(1);
+        }
+        ret = ioctl(vm->vcpus->vcpu_fd, KVM_RUN, 0);
+        printf("Time: %f\n", CURRENT_TIME);
+        printf("VMFD: %d stopped running - exit reason: %d\n", vm->vm_fd, vm->vcpus->kvm_run->exit_reason);
+
+        switch (vm->vcpus->kvm_run->exit_reason)
+        {
+        case KVM_EXIT_UNKNOWN:
+            printf("VMFD: %d KVM_EXIT_UNKNOWN\n", vm->vm_fd);
+            break;
+        case KVM_EXIT_DEBUG:
+            printf("VMFD: %d KVM_EXIT_DEBUG\n", vm->vm_fd);
+            break;
+        case KVM_EXIT_IO:
+            printf("VMFD: %d KVM_EXIT_IO\n", vm->vm_fd);
+            printf("VMFD: %d out port: %d, data: %d\n", vm->vm_fd, vm->vcpus->kvm_run->io.port, *(int *)((char *)(vm->vcpus->kvm_run) + vm->vcpus->kvm_run->io.data_offset));
+            sleep(1);
+            break;
+        case KVM_EXIT_MMIO:
+            printf("VMFD: %d KVM_EXIT_MMIO\n", vm->vm_fd);
+            break;
+        case KVM_EXIT_INTR:
+            /* clear the pending signal */
+            sigtimedwait(&mask, NULL, NULL);
+            printf("VMFD: %d KVM_EXIT_INTR\n", vm->vm_fd);
+            break;
+        case KVM_EXIT_SHUTDOWN:
+            printf("VMFD: %d KVM_EXIT_SHUTDOWN\n", vm->vm_fd);
+            goto exit_kvm;
+            break;
+        default:
+            printf("VMFD: %d KVM PANIC\n", vm->vm_fd);
+            printf("VMFD: %d KVM exit reason: %d\n", vm->vm_fd, vm->vcpus->kvm_run->exit_reason);
+            goto exit_kvm;
+        }
+
+        if (ret < 0 && vm->vcpus->kvm_run->exit_reason != KVM_EXIT_INTR)
+        {
+            fprintf(stderr, "VMFD: %d KVM_RUN failed\n", vm->vm_fd);
+            printf("VMFD: %d KVM_RUN return value %d\n", vm->vm_fd, ret);
+            exit(1);
+        }
+    }
+
+exit_kvm:
+    return;
 }
 
 void kvm_clean_vm(struct vm *vm)
